@@ -4,3 +4,6 @@
 2. [《老司机带你用 Go 语言实现 Raft 分布式一致性协议》](src/raft)
 3. [《老司机带你用 Go 语言实现 Paxos 算法》](src/paxos)
 4. [《老司机带你用 Go 语言实现分布式数据库》](src/shardkv)
+
+
+raft 文章： http://www.hawkers.cc/2016/11/raft-algorithm.html
