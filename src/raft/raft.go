@@ -62,6 +62,12 @@ type ApplyMsg struct {
 // 这个感觉有点类似于tcp传数据时的ack，总是返回下一个期望收到的数据包。
 // 也就是说这里除了nextIndex的更新之外，Leader不需要做什么额外的动作。这就是Raft可理解的地方了。
 
+/*
+ 日志由序号与条目组成，每个条目又由任期与指令组成，总体上呈三段式结构：
+ 1   1   1   2   2   3   3   任期
+ a   a   b   c   d   e   f   命令
+ 1   2   3   4   5   6   7   index，单调递增
+*/
 type LogEntry struct {
 	LogIndex   int // log的索引
 	LogTerm    int // log的任期。   这说明 Log实体 里面是含有索引和任期属性的，如果保证index和term相同，则保证leader和follower日志都完全相同
@@ -100,7 +106,13 @@ type Raft struct {
 	lastApplied int
 
 	//volatile state on leader
-	nextIndex  []int
+	/*
+		领导者通过在每一个追随者维护了一个 nextIndex，表示下一个需要发送给跟随者的日志条目索引地址，
+		领导者刚获得选举时，初始化所有 nextIndex 值为自己的最后一条日志的index加1；
+		当追随者的日志和领导者不一致，那在下一次的AppendEntries时的一致性检查会失败，
+		被追随者拒绝后，领导者就会减小 nextIndex 值进行重试，nextIndex 会在某位置使领导者和追随者日志达成一致。
+	*/
+	nextIndex  []int // leader期待的需要发送的下一条日志
 	matchIndex []int
 }
 
@@ -214,7 +226,7 @@ type AppendEntriesReply struct {
 	// Your data here.
 	Term      int
 	Success   bool
-	NextIndex int
+	NextIndex int // follower期待的下一条日志
 }
 
 //
@@ -411,6 +423,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 		}
 		if reply.Success {
 			if len(args.Entries) > 0 {
+				// 下一个需要发送给跟随者的日志index
 				rf.nextIndex[server] = args.Entries[len(args.Entries)-1].LogIndex + 1
 				//reply.NextIndex
 				//rf.nextIndex[server] = reply.NextIndex
@@ -590,9 +603,16 @@ func (rf *Raft) broadcastRequestVote() {
 }
 
 /**
- * Log replication
- */
-// 广播日志复制
+* Log replication
+ Leader接收到指令后写入到本地日志，在随后的心跳中（AppendEntries）往其他追随者发送该条目，
+ 等待收到过半追随者响应后将该条目标志位已提交状态，
+ 并发往状态机执行，完成后返回结果给客户端；
+ 在后续心跳包（AppendEntries）中通知所有追随者哪些条目为已提交状态，
+ 以便追随者更新在自己状态机中执行该指令；
+ 只有Leader能够接受客户端的指令，追随者只能够接收领导者的AppendEntries请求
+
+*/
+// 广播日志复制. Leader不删除任何日志、Follower只接收Leader所发送的日志信息
 func (rf *Raft) broadcastAppendEntries() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -600,11 +620,13 @@ func (rf *Raft) broadcastAppendEntries() {
 	last := rf.getLastIndex()
 	baseIndex := rf.log[0].LogIndex
 	//If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
+	// 计算从已经提交了的index开始，到最后的index，
+	// 计算可以提交的index有多少
 	for i := rf.commitIndex + 1; i <= last; i++ {
 		num := 1
 		for j := range rf.peers {
 			if j != rf.me && rf.matchIndex[j] >= i && rf.log[i-baseIndex].LogTerm == rf.currentTerm {
-				num++
+				num++ // 记录已经复制了index的follower个数
 			}
 		}
 		if 2*num > len(rf.peers) {
@@ -735,6 +757,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					for i := range rf.peers {
 						//The leader maintains a nextIndex for each follower, which is the index of the next log entry the leader will send to that follower.
 						// When a leader first comes to power, it initializes all nextIndex values to the index just after the last one in its log
+						// 领导者刚获得选举时，初始化所有 nextIndex 值为自己的最后一条日志的index加1
 						rf.nextIndex[i] = rf.getLastIndex() + 1
 						rf.matchIndex[i] = 0
 					}
