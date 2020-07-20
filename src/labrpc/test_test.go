@@ -59,10 +59,10 @@ func TestBasic(t *testing.T) {
 	e := rn.MakeEnd("end1-99")
 
 	js := &JunkServer{}
-	svc := MakeService(js)
+	svc := MakeService(js) // 这里是创建用户自定义的一个服务，具体就是一个结构体，以及该结构体所拥有的方法
 
-	rs := MakeServer()
-	rs.AddService(svc)
+	rs := MakeServer() // 这里才是正常创建一个服务器，用于提供服务
+	rs.AddService(svc) // 将服务放到服务器里面
 	rn.AddServer("server99", rs)
 
 	rn.Connect("end1-99", "server99")
@@ -70,6 +70,7 @@ func TestBasic(t *testing.T) {
 
 	{
 		reply := ""
+		// 通过 结构体名.方法 来访问具体的服务，这里是通过反射来实现的
 		e.Call("JunkServer.Handler2", 111, &reply)
 		if reply != "handler2-111" {
 			t.Fatalf("wrong reply from Handler2")

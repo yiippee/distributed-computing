@@ -62,7 +62,7 @@ type reqMsg struct {
 	svcMeth  string      // e.g. "Raft.AppendEntries"
 	argsType reflect.Type
 	args     []byte
-	replyCh  chan replyMsg
+	replyCh  chan replyMsg // 请求信息里面携带着回复的chan，说明chan是first class
 }
 
 type replyMsg struct {
@@ -72,7 +72,7 @@ type replyMsg struct {
 
 type ClientEnd struct {
 	endname interface{} // this end-point's name
-	ch      chan reqMsg // copy of Network.endCh
+	ch      chan reqMsg // copy of Network.endCh  这是对network的chan的引用，chan默认是引用类型
 }
 
 // send an RPC, wait for the reply.
@@ -90,9 +90,9 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 	qe.Encode(args)
 	req.args = qb.Bytes()
 
-	e.ch <- req
+	e.ch <- req // 往network的chan中写入请求信息
 
-	rep := <-req.replyCh
+	rep := <-req.replyCh // 等待回复，即使超时了，network也会回复失败信息
 	if rep.ok {
 		rb := bytes.NewBuffer(rep.reply)
 		rd := gob.NewDecoder(rb)
@@ -157,6 +157,7 @@ func (rn *Network) LongDelays(yes bool) {
 	rn.longDelays = yes
 }
 
+// 通过名字来获取server的节点信息
 func (rn *Network) ReadEndnameInfo(endname interface{}) (enabled bool,
 	servername interface{}, server *Server, reliable bool, longreordering bool,
 ) {
@@ -187,14 +188,15 @@ func (rn *Network) ProcessReq(req reqMsg) {
 	enabled, servername, server, reliable, longreordering := rn.ReadEndnameInfo(req.endname)
 
 	if enabled && servername != nil && server != nil {
+		// 服务可用，服务有效，存在
 		if reliable == false {
-			// short delay
+			// short delay  短时间休眠，模拟网络抖动？
 			ms := (rand.Int() % 27)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 
 		if reliable == false && (rand.Int()%1000) < 100 {
-			// drop the request, return as if timeout
+			// drop the request, return as if timeout 模拟超时
 			req.replyCh <- replyMsg{false, nil}
 			return
 		}
@@ -217,7 +219,7 @@ func (rn *Network) ProcessReq(req reqMsg) {
 		serverDead := false
 		for replyOK == false && serverDead == false {
 			select {
-			case reply = <-ech:
+			case reply = <-ech: // 等待回复
 				replyOK = true
 			case <-time.After(100 * time.Millisecond):
 				serverDead = rn.IsServerDead(req.endname, servername, server)
@@ -233,6 +235,7 @@ func (rn *Network) ProcessReq(req reqMsg) {
 		serverDead = rn.IsServerDead(req.endname, servername, server)
 
 		if replyOK == false || serverDead == true {
+			// 确认服务挂了
 			// server was killed while we were waiting; return error.
 			req.replyCh <- replyMsg{false, nil}
 		} else if reliable == false && (rand.Int()%1000) < 100 {
@@ -244,9 +247,10 @@ func (rn *Network) ProcessReq(req reqMsg) {
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 			req.replyCh <- reply
 		} else {
-			req.replyCh <- reply
+			req.replyCh <- reply // 将回复内容写入chan
 		}
 	} else {
+		// 模拟没有回复，最终导致超时的情况
 		// simulate no reply and eventual timeout.
 		ms := 0
 		if rn.longDelays {
@@ -258,6 +262,7 @@ func (rn *Network) ProcessReq(req reqMsg) {
 			// server in fairly rapid succession.
 			ms = (rand.Int() % 100)
 		}
+		// 睡眠随机的一段时间
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		req.replyCh <- replyMsg{false, nil}
 	}
@@ -347,17 +352,18 @@ func (rs *Server) AddService(svc *Service) {
 	rs.services[svc.name] = svc
 }
 
+// 分发请求信息
 func (rs *Server) dispatch(req reqMsg) replyMsg {
 	rs.mu.Lock()
 
-	rs.count += 1
+	rs.count += 1 // 统计请求数量
 
-	// split Raft.AppendEntries into service and method
+	// split Raft.AppendEntries into service and method，将服务名字、方法名字解析出来
 	dot := strings.LastIndex(req.svcMeth, ".")
 	serviceName := req.svcMeth[:dot]
 	methodName := req.svcMeth[dot+1:]
 
-	service, ok := rs.services[serviceName]
+	service, ok := rs.services[serviceName] // 通过服务名字找到具体的服务信息
 
 	rs.mu.Unlock()
 

@@ -22,7 +22,7 @@ import (
 )
 
 func randstring(n int) string {
-	b := make([]byte, 2 * n)
+	b := make([]byte, 2*n)
 	crand.Read(b)
 	s := base64.URLEncoding.EncodeToString(b)
 	return s[0:n]
@@ -33,10 +33,10 @@ type config struct {
 	t         *testing.T
 	net       *labrpc.Network
 	n         int
-	done      int32         // tell internal threads to die
+	done      int32 // tell internal threads to die
 	rafts     []*Raft
-	applyErr  []string      // from apply channel readers
-	connected []bool        // whether each server is on the net
+	applyErr  []string // from apply channel readers
+	connected []bool   // whether each server is on the net
 	saved     []*Persister
 	endnames  [][]string    // the port file names each sends to
 	logs      []map[int]int // copy of each server's committed entries
@@ -145,24 +145,29 @@ func (cfg *config) start1(i int) {
 	// listen to messages from Raft indicating newly committed messages.
 	applyCh := make(chan ApplyMsg)
 	go func() {
+		// 每一个节点启动后，监听applyCh
 		for m := range applyCh {
 			err_msg := ""
 			if m.UseSnapshot {
 				// ignore the snapshot
 			} else if v, ok := (m.Command).(int); ok {
+				// 收到日志命令
 				cfg.mu.Lock()
 				for j := 0; j < len(cfg.logs); j++ {
+					// 遍历各个节点已经提交的日志实例，不是遍历日志内容，这是一个二维数组
 					if old, oldok := cfg.logs[j][m.Index]; oldok && old != v {
 						// some server has already committed a different value for this entry!
+						// 日志实例中存在m.Index，但是不等于收到的日志命令，则报错
 						err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 							m.Index, i, m.Command, j, old)
 					}
 				}
-				_, prevok := cfg.logs[i][m.Index - 1]
-				cfg.logs[i][m.Index] = v
+				_, prevok := cfg.logs[i][m.Index-1] // 获取自己日志中收到的日志index的前一个。因为日志index是按序递增的
+				cfg.logs[i][m.Index] = v            // 更新命令
 				cfg.mu.Unlock()
 
 				if m.Index > 1 && prevok == false {
+					// 如果index前一个日志不存在，则报错
 					err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.Index)
 				}
 			} else {
@@ -178,7 +183,8 @@ func (cfg *config) start1(i int) {
 		}
 	}()
 
-	rf := Make(ends, i, cfg.saved[i], applyCh)
+	// 新建一个raft节点，
+	rf := Make(ends /*对端节点，*/, i, cfg.saved[i], applyCh)
 
 	cfg.mu.Lock()
 	cfg.rafts[i] = rf
@@ -383,7 +389,7 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // returns index.
 func (cfg *config) one(cmd int, expectedServers int) int {
 
-	for i:= 0;i< len(cfg.rafts);i++ {
+	for i := 0; i < len(cfg.rafts); i++ {
 		//DPrintf(cfg.rafts)
 	}
 
