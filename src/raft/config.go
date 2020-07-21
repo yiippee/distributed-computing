@@ -143,6 +143,7 @@ func (cfg *config) start1(i int) {
 	cfg.mu.Unlock()
 
 	// listen to messages from Raft indicating newly committed messages.
+	// 一下是对已经提交的日志，进行应用到fsm中，与日志复制无关系
 	applyCh := make(chan ApplyMsg)
 	go func() {
 		// 每一个节点启动后，监听applyCh

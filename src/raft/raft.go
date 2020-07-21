@@ -112,8 +112,8 @@ type Raft struct {
 		当追随者的日志和领导者不一致，那在下一次的AppendEntries时的一致性检查会失败，
 		被追随者拒绝后，领导者就会减小 nextIndex 值进行重试，nextIndex 会在某位置使领导者和追随者日志达成一致。
 	*/
-	nextIndex  []int // leader期待的需要发送的下一条日志
-	matchIndex []int
+	nextIndex  []int // leader期待的需要发送的下一条日志。 这是一个数组，每一个元素对应着一个follower，维护着所有的follower
+	matchIndex []int // 也是一个数组，维护所有的follower已经匹配的日志，也就是已经replicated的日志，已经复制了的日志
 }
 
 // return currentTerm and whether this server
@@ -219,7 +219,7 @@ type AppendEntriesArgs struct {
 	PrevLogTerm  int        // 上一个 log 的任期号. 发送信息需要带上一个索引和任期，是因为需要保证上一个是对上号的，这样递归下去，肯定会保证所有的都正确。
 	PrevLogIndex int        // 上一个 log 的索引号.
 	Entries      []LogEntry // 需要存储的 log (心跳的这个字段为空; 为了提高效率可能会发送多个)
-	LeaderCommit int        // 领导人的 commitIndex
+	LeaderCommit int        // leader已经提交了的日志 commitIndex
 }
 
 type AppendEntriesReply struct {
@@ -277,6 +277,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	}
 }
 
+// 这个方法是follower接受leader发送的日志复制信息的处理方法
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here.
 	rf.mu.Lock()
@@ -295,29 +296,33 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	rf.chanHeartbeat <- true
 	//If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
+		// 如果收到的日志复制信息任期大于当前的任期，则修改为最新的任期
 		rf.currentTerm = args.Term
 		rf.state = FLLOWER
 		rf.votedFor = -1
 	}
 	reply.Term = args.Term
 
-	// 检查对于发送方来说的上一个索引
+	// 检查对于发送方来说的上一个索引。就是说，如果leader发送过来的上一个索引都大于我自己的最后一条索引，则说明我落后leader太多了啊
+	// 需要发送我自己期待的下一条索引，好让leader知道同步的位置在哪里。
 	if args.PrevLogIndex > rf.getLastIndex() {
 		// 如果不对，则返回我期待的索引号，即我当前的索引加一
 		reply.NextIndex = rf.getLastIndex() + 1
 		return
 	}
 
-	baseIndex := rf.log[0].LogIndex
+	baseIndex := rf.log[0].LogIndex // 从编号 0 开始获取日志，就是从第一个日志开始。因为编号不一定是从0开始，也可能是从8888开始，但是肯定是在log[0]中
 
 	// If a follower’s log is inconsistent with the leader’s, the AppendEntries consis- tency check will fail in the next AppendEntries RPC.
-	// Af- ter a rejection, the leader decrements nextIndex and retries the AppendEntries RPC
-	//Eventually nextIndex will reach a point where the leader and follower logs match
-	//which removes any conflicting entries in the follower’s log and appends entries from the leader’s log (if any).
+	// After a rejection, the leader decrements nextIndex and retries the AppendEntries RPC
+	// Eventually nextIndex will reach a point where the leader and follower logs match
+	// which removes any conflicting entries in the follower’s log and appends entries from the leader’s log (if any).
 	if args.PrevLogIndex > baseIndex {
-		term := rf.log[args.PrevLogIndex-baseIndex].LogTerm
-		// 判断上一个任期是否与现在任期相同
+		// 如果leader发过来的前序索引大于我的基础索引，（一般来说肯定会大于的）
+		term := rf.log[args.PrevLogIndex-baseIndex].LogTerm // 获取我自己的日志任期
+		// 判断leader发送过来的上一个任期是否与我现在的任期是否相同
 		if args.PrevLogTerm != term {
+			// 如果不相同，则需要找到我自己所有的索引中，第一次与leader
 			for i := args.PrevLogIndex - 1; i >= baseIndex; i-- {
 				if rf.log[i-baseIndex].LogTerm != term {
 					reply.NextIndex = i + 1
@@ -330,14 +335,15 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	if args.PrevLogIndex < baseIndex {
 
 	} else {
-		//Append any new entries not already in the log
+		// Append any new entries not already in the log
 		rf.log = rf.log[:args.PrevLogIndex+1-baseIndex]
-		rf.log = append(rf.log, args.Entries...)
+		rf.log = append(rf.log, args.Entries...) // 把leader发送过来的日志复制到自己的log中
 		reply.Success = true
 		reply.NextIndex = rf.getLastIndex() + 1
 	}
 	//If leaderCommit > commitIndex, set commitIndex =min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
+		// 如果leader提交的日志数大于我本身的日志提交数，则对于我来说，我已经提交了的日志索引就取min(leaderCommit, index of last new entry)最小的值
 		last := rf.getLastIndex()
 		if args.LeaderCommit > last {
 			rf.commitIndex = last
@@ -415,6 +421,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 		}
 
 		if reply.Term > rf.currentTerm {
+			// follower返回的任期大于我自己的任期，说明环境有变，我不能再做leader了，改为follower
 			rf.currentTerm = reply.Term
 			rf.state = FLLOWER
 			rf.votedFor = -1
@@ -423,13 +430,15 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 		}
 		if reply.Success {
 			if len(args.Entries) > 0 {
-				// 下一个需要发送给跟随者的日志index
+				// 记录回复成功的那个follower的下一个需要发送给跟随者的日志index加1
 				rf.nextIndex[server] = args.Entries[len(args.Entries)-1].LogIndex + 1
 				//reply.NextIndex
 				//rf.nextIndex[server] = reply.NextIndex
+				// 记录回复成功的那个follower已经匹配了的日志
 				rf.matchIndex[server] = rf.nextIndex[server] - 1
 			}
 		} else {
+			// 否则将下一条需要发送的日志修改为follower回复期待的索引
 			rf.nextIndex[server] = reply.NextIndex
 		}
 	}
